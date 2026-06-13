@@ -217,6 +217,57 @@
     animation: blink 1s ease-in-out infinite;
   }
 
+  /* ── POI MARKERS ── */
+  .poi-marker {
+    display: flex; align-items: center; gap: 4px;
+    background: var(--surface);
+    border: 1.5px solid var(--border);
+    border-radius: 20px;
+    padding: 4px 8px 4px 5px;
+    box-shadow: 0 2px 10px rgba(0,0,0,.55);
+    font-family: 'Inter', sans-serif;
+    font-size: 11px; font-weight: 600;
+    color: var(--text);
+    white-space: nowrap;
+    cursor: pointer;
+    transition: border-color .15s;
+  }
+  .poi-marker:hover { border-color: var(--fucsia); }
+  .poi-marker .poi-emoji { font-size: 15px; line-height: 1; }
+  .poi-marker.peak      { border-color: rgba(217,70,239,.4); }
+  .poi-marker.viewpoint { border-color: rgba(124,58,237,.4); }
+  .poi-marker.waterfall { border-color: rgba(56,189,248,.4); }
+  .poi-marker.cave      { border-color: rgba(161,161,170,.3); }
+  .poi-marker.shelter   { border-color: rgba(251,191,36,.4); }
+  .poi-marker.spring    { border-color: rgba(52,211,153,.4); }
+  .poi-marker.reserve   { border-color: rgba(134,239,172,.4); }
+
+  /* ── LIGHTBOX ── */
+  #lightbox {
+    display: none;
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,.92);
+    z-index: 19999;
+    align-items: center; justify-content: center;
+    cursor: zoom-out;
+    backdrop-filter: blur(4px);
+  }
+  #lightbox.open { display: flex; }
+  #lightbox img {
+    max-width: 96vw; max-height: 92dvh;
+    border-radius: 10px;
+    box-shadow: 0 8px 40px rgba(0,0,0,.8);
+    object-fit: contain;
+    cursor: default;
+  }
+  #lightbox-close {
+    position: fixed; top: 16px; right: 18px;
+    font-size: 28px; color: #fff; cursor: pointer;
+    background: none; border: none;
+    line-height: 1; opacity: .8;
+  }
+  #lightbox-close:hover { opacity: 1; }
+
   #btn-locate {
     position: absolute;
     bottom: 14px; right: 10px;
@@ -654,7 +705,7 @@
   <!-- MAP -->
   <div id="map-wrap">
     <div id="map"></div>
-    <button id="btn-photos" title="Explorar fotos del lugar">
+    <button id="btn-photos" title="Lugares de interés: cumbres, miradores, cascadas…">
       <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <rect x="3" y="8" width="18" height="13" rx="2"/>
         <path d="M16 8l-2-4H10L8 8"/>
@@ -728,6 +779,12 @@
 
 <!-- TOAST -->
 <div id="toast"></div>
+
+<!-- LIGHTBOX -->
+<div id="lightbox">
+  <button id="lightbox-close">✕</button>
+  <img id="lightbox-img" src="" alt="">
+</div>
 
 <!-- ════════════════════════════════════════
      MODALS
@@ -1288,17 +1345,19 @@ function saveWaypoint() {
 }
 
 function buildWpPopup(wp) {
-  // URL que abre Google Maps en ese punto y muestra la pestaña de fotos
   const gmPhotos = `https://www.google.com/maps/search/?api=1&query=${wp.lat},${wp.lng}`;
   const gmSV     = `https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${wp.lat},${wp.lng}`;
   let h = `<div class="popup-title">${esc(wp.name)}</div>`;
   if (wp.desc) h += `<div class="popup-desc">${esc(wp.desc)}</div>`;
-  if (wp.photoDataUrl) h += `<img class="popup-img" src="${wp.photoDataUrl}" alt="foto">`;
+  if (wp.photoDataUrl) {
+    const safe = wp.photoDataUrl.replace(/'/g, "\\'");
+    h += `<img class="popup-img" src="${wp.photoDataUrl}" alt="foto"
+               style="cursor:zoom-in" onclick="openLightbox('${safe}')">`;
+  }
   h += `<div style="display:flex;gap:5px;margin-top:8px;flex-wrap:wrap">
     <a class="popup-gmaps" href="${gmPhotos}" target="_blank" rel="noopener">📸 Fotos del lugar</a>
     <a class="popup-gmaps" href="${gmSV}" target="_blank" rel="noopener">🔵 Street View</a>
-  </div>
-  <div style="font-size:9px;color:#a78bba;margin-top:5px;line-height:1.4">En Google Maps: toca "Fotos" para ver imágenes subidas por la comunidad</div>`;
+  </div>`;
   return h;
 }
 
@@ -1637,119 +1696,169 @@ document.getElementById('d-btn-delete').addEventListener('click',()=>{
   toast('Ruta eliminada');
 });
 
-// ── PHOTO EXPLORER (iNaturalist) ───────────────────────────────────────────
-let photoMarkers  = [];
-let photosVisible = false;
+// ── LIGHTBOX ───────────────────────────────────────────────────────────────
+function openLightbox(src) {
+  document.getElementById('lightbox-img').src = src;
+  document.getElementById('lightbox').classList.add('open');
+}
+document.getElementById('lightbox').addEventListener('click', e => {
+  if (e.target !== document.getElementById('lightbox-img'))
+    document.getElementById('lightbox').classList.remove('open');
+});
+document.getElementById('lightbox-close').addEventListener('click', () =>
+  document.getElementById('lightbox').classList.remove('open')
+);
+window.openLightbox = openLightbox;
 
-function radiusKmFromZoom(z) {
-  if (z >= 15) return 1;
-  if (z >= 13) return 3;
-  if (z >= 11) return 8;
-  return 20;
+// ── POI EXPLORER (Overpass / OpenStreetMap) ────────────────────────────────
+let poiMarkers  = [];
+let poisVisible = false;
+
+const POI_TYPES = [
+  { key:'peak',      tag:'natural=peak',           emoji:'⛰️',  label:'Cumbre',   cls:'peak'      },
+  { key:'viewpoint', tag:'tourism=viewpoint',       emoji:'👁',  label:'Mirador',  cls:'viewpoint' },
+  { key:'waterfall', tag:'waterfall=yes',           emoji:'💧',  label:'Cascada',  cls:'waterfall' },
+  { key:'waterfall2',tag:'natural=waterfall',       emoji:'💧',  label:'Cascada',  cls:'waterfall' },
+  { key:'cave',      tag:'natural=cave_entrance',   emoji:'🕳',  label:'Cueva',    cls:'cave'      },
+  { key:'shelter',   tag:'amenity=shelter',         emoji:'🏕',  label:'Refugio',  cls:'shelter'   },
+  { key:'spring',    tag:'natural=spring',          emoji:'🌊',  label:'Vertiente',cls:'spring'    },
+  { key:'reserve',   tag:'leisure=nature_reserve',  emoji:'🌿',  label:'Reserva',  cls:'reserve'   },
+  { key:'ruins',     tag:'historic=ruins',          emoji:'🏛',  label:'Ruinas',   cls:'cave'      },
+];
+
+function radiusFromZoom(z) {
+  if (z >= 15) return 3000;
+  if (z >= 13) return 8000;
+  if (z >= 11) return 20000;
+  return 50000;
 }
 
-async function fetchINatPhotos(lat, lng, radiusKm) {
-  const url = `https://api.inaturalist.org/v1/observations` +
-    `?lat=${lat}&lng=${lng}&radius=${radiusKm}` +
-    `&photos=true&per_page=30` +
-    `&order_by=votes&quality_grade=research` +
-    `&locale=es`;
+function poiTypeInfo(tags) {
+  if (tags.natural === 'peak')          return POI_TYPES[0];
+  if (tags.tourism === 'viewpoint')     return POI_TYPES[1];
+  if (tags.waterfall || tags.natural === 'waterfall') return POI_TYPES[2];
+  if (tags.natural === 'cave_entrance') return POI_TYPES[4];
+  if (tags.amenity === 'shelter')       return POI_TYPES[5];
+  if (tags.natural === 'spring')        return POI_TYPES[6];
+  if (tags.leisure === 'nature_reserve') return POI_TYPES[7];
+  if (tags.historic === 'ruins')        return POI_TYPES[8];
+  return { emoji:'📍', label:'Lugar', cls:'' };
+}
 
-  const res  = await fetch(url, { signal: AbortSignal.timeout(10000) });
+async function fetchOverpassPOIs(lat, lng, radius) {
+  const tags = [
+    'natural=peak','tourism=viewpoint','natural=waterfall',
+    'natural=cave_entrance','amenity=shelter','natural=spring',
+    'leisure=nature_reserve','historic=ruins','waterfall=yes'
+  ];
+  const nodeQueries = tags.map(t => {
+    const [k,v] = t.split('=');
+    return `node["${k}"="${v}"](around:${radius},${lat},${lng});`;
+  }).join('\n');
+
+  const query = `[out:json][timeout:15];(${nodeQueries});out body;`;
+  const res   = await fetch('https://overpass-api.de/api/interpreter', {
+    method: 'POST',
+    body:   query,
+    signal: AbortSignal.timeout(15000)
+  });
   const data = await res.json();
 
-  return (data.results || [])
-    .filter(o => o.photos?.length && o.geojson?.coordinates)
-    .map(o => {
-      const [lng, lat] = o.geojson.coordinates;
-      const photo = o.photos[0];
-      const thumb  = photo.url;                                   // square 75px
-      const medium = photo.url.replace('square','medium');       // 500px
-      const name   = o.taxon?.preferred_common_name
-                  || o.taxon?.name
-                  || o.species_guess
-                  || 'Observación';
-      return {
-        name,
-        scientific: o.taxon?.name || '',
-        user:   o.user?.name || o.user?.login || '',
-        date:   o.observed_on || '',
-        desc:   o.description?.replace(/<[^>]+>/g,'').trim().slice(0,120) || '',
-        thumb, medium,
-        lat:  parseFloat(lat),
-        lng:  parseFloat(lng),
-        url:  `https://www.inaturalist.org/observations/${o.id}`
-      };
-    });
+  // dedup by name+position, filter unnamed only if no other data
+  const seen = new Set();
+  return (data.elements || []).filter(el => {
+    const key = `${el.lat.toFixed(4)},${el.lon.toFixed(4)}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).map(el => ({
+    lat:  el.lat,
+    lng:  el.lon,
+    tags: el.tags || {},
+    name: el.tags?.name || el.tags?.['name:es'] || ''
+  }));
 }
 
-function clearPhotoMarkers() {
-  photoMarkers.forEach(m => map.removeLayer(m));
-  photoMarkers = [];
+function buildPoiMarkerHtml(poi) {
+  const info  = poiTypeInfo(poi.tags);
+  const label = poi.name ? poi.name.slice(0,18) : info.label;
+  const ele   = poi.tags.ele ? ` ${Math.round(poi.tags.ele)}m` : '';
+  return `<div class="poi-marker ${info.cls}">
+    <span class="poi-emoji">${info.emoji}</span>
+    <span>${esc(label)}${esc(ele)}</span>
+  </div>`;
 }
 
-function buildInatPopup(ph) {
-  const compassName = ph.name.replace(/'/g,'\\u0027').slice(0,50);
-  const meta = [ph.user && `👤 ${esc(ph.user)}`, ph.date && `📅 ${ph.date}`].filter(Boolean).join('  ');
+function buildPoiPopup(poi) {
+  const info  = poiTypeInfo(poi.tags);
+  const name  = poi.name || info.label;
+  const ele   = poi.tags.ele   ? `🏔 ${Math.round(poi.tags.ele)} m s.n.m.` : '';
+  const desc  = poi.tags.description || poi.tags['description:es'] || '';
+  const wiki  = poi.tags.wikipedia
+    ? `<a class="popup-gmaps" href="https://es.wikipedia.org/wiki/${encodeURIComponent(poi.tags.wikipedia.replace(/^es:/,''))}" target="_blank" rel="noopener">📖 Wikipedia</a>`
+    : '';
+  const compassName = name.replace(/'/g,'\\u0027').slice(0,50);
   return `
-    <div class="popup-title">${esc(ph.name)}</div>
-    ${ph.scientific ? `<div class="popup-desc" style="font-style:italic;margin-bottom:4px">${esc(ph.scientific)}</div>` : ''}
-    ${meta ? `<div class="popup-desc">${meta}</div>` : ''}
-    ${ph.desc  ? `<div class="popup-desc">${esc(ph.desc)}</div>` : ''}
-    <img class="popup-img" src="${esc(ph.medium)}" alt="${esc(ph.name)}"
-         style="cursor:pointer" onclick="window.open('${esc(ph.url)}','_blank','noopener')">
-    <button class="popup-nav" onclick="startCompassTo(${ph.lat},${ph.lng},'${compassName}')">
+    <div class="popup-title">${info.emoji} ${esc(name)}</div>
+    ${ele   ? `<div class="popup-desc">${ele}</div>` : ''}
+    ${desc  ? `<div class="popup-desc">${esc(desc.slice(0,140))}</div>` : ''}
+    ${wiki}
+    <button class="popup-nav" onclick="startCompassTo(${poi.lat},${poi.lng},'${compassName}')">
       🧭 Navegar aquí — sin internet
     </button>`;
 }
 
-async function togglePhotos() {
+function clearPoiMarkers() {
+  poiMarkers.forEach(m => map.removeLayer(m));
+  poiMarkers = [];
+}
+
+async function togglePOIs() {
   const btn = document.getElementById('btn-photos');
 
-  if (photosVisible) {
-    clearPhotoMarkers();
-    photosVisible = false;
+  if (poisVisible) {
+    clearPoiMarkers();
+    poisVisible = false;
     btn.classList.remove('active', 'loading');
-    toast('Observaciones ocultadas');
+    toast('Lugares de interés ocultados');
     return;
   }
 
   btn.classList.add('loading');
   try {
     const center = map.getCenter();
-    const radius = radiusKmFromZoom(map.getZoom());
-    const photos = await fetchINatPhotos(center.lat, center.lng, radius);
+    const radius = radiusFromZoom(map.getZoom());
+    const pois   = await fetchOverpassPOIs(center.lat, center.lng, radius);
 
-    if (!photos.length) {
-      toast('Sin observaciones en esta zona — aleja el zoom e intenta de nuevo');
+    if (!pois.length) {
+      toast('Sin lugares de interés en esta zona — aleja el zoom e intenta');
       btn.classList.remove('loading');
       return;
     }
 
-    photos.forEach(ph => {
+    pois.forEach(poi => {
       const icon = L.divIcon({
         className: '',
-        html: `<div class="photo-marker-wrap"><img src="${ph.thumb}" loading="lazy" alt=""></div>`,
-        iconSize:   [44, 44],
-        iconAnchor: [22, 44]
+        html:       buildPoiMarkerHtml(poi),
+        iconAnchor: [0, 16]
       });
-      const m = L.marker([ph.lat, ph.lng], { icon, zIndexOffset: 500 })
+      const m = L.marker([poi.lat, poi.lng], { icon, zIndexOffset: 500 })
         .addTo(map)
-        .bindPopup(buildInatPopup(ph), { maxWidth: 250 });
-      photoMarkers.push(m);
+        .bindPopup(buildPoiPopup(poi), { maxWidth: 240 });
+      poiMarkers.push(m);
     });
 
-    photosVisible = true;
+    poisVisible = true;
     btn.classList.remove('loading');
     btn.classList.add('active');
-    toast(`📸 ${photos.length} fotos en la zona — toca una para navegar`);
+    toast(`🗺 ${pois.length} lugares encontrados — toca uno para navegar`);
   } catch(e) {
     btn.classList.remove('loading');
-    toast('Error al cargar — revisa tu conexión a internet');
+    toast('Error al cargar lugares — revisa tu conexión');
   }
 }
 
-document.getElementById('btn-photos').addEventListener('click', togglePhotos);
+document.getElementById('btn-photos').addEventListener('click', togglePOIs);
 
 // ── BRÚJULA / NAVEGACIÓN OFFLINE ───────────────────────────────────────────
 let compassTarget   = null;   // {lat, lng, name}
